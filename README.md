@@ -1,5 +1,8 @@
 # Solar EV Distributed Charging
 
+[![CI](https://github.com/akiroussama/solar-ev-distributed-charging/actions/workflows/ci.yml/badge.svg)](https://github.com/akiroussama/solar-ev-distributed-charging/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/akiroussama/solar-ev-distributed-charging/actions/workflows/codeql.yml/badge.svg)](https://github.com/akiroussama/solar-ev-distributed-charging/actions/workflows/codeql.yml)
+
 Research-grade Python toolkit for distributed admission, assignment, and queue
 scheduling in solar-powered electric-vehicle charging networks.
 
