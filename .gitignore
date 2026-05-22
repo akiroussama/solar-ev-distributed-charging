@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local/editor state
+.idea/
+.vscode/
+*.swp
+
+# Confidential source attachments must never enter the public repo.
+*.pptx
+*.docx
+*.pdf
+*.xlsx
+

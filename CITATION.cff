@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: Solar EV Distributed Charging
+message: If you use this research code, please cite the repository.
+type: software
+authors:
+  - family-names: Oussama
+    given-names: Akir
+license: MIT
+repository-code: "https://github.com/akiroussama/solar-ev-distributed-charging"
+abstract: Research toolkit for distributed admission and assignment in solar EV charging networks.
+keywords:
+  - electric vehicles
+  - solar charging
+  - distributed systems
+  - admission control
+  - queueing
+  - cybersecurity
+
