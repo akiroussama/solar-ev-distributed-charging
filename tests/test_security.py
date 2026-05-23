@@ -72,3 +72,12 @@ def test_trust_registry_rejects_implausible_soc_jump() -> None:
         registry.check_request(make_request(soc=0.01, desired_soc=0.99), now_minute=1.0)
         is SecurityCheck.IMPLAUSIBLE_SOC
     )
+
+
+def test_trust_registry_rejects_implausible_priority_claim() -> None:
+    registry = TrustRegistry(known_vehicle_ids={"ev-1"})
+
+    assert (
+        registry.check_request(make_request(priority=99), now_minute=1.0)
+        is SecurityCheck.IMPLAUSIBLE_PRIORITY
+    )

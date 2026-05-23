@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import sqrt
 from pathlib import Path
 from statistics import mean, stdev
@@ -19,6 +19,7 @@ METRIC_FIELDS: tuple[str, ...] = (
     "average_total_minutes",
     "average_extra_distance_km",
     "storage_energy_used_kwh",
+    "direct_pv_energy_used_kwh",
     "grid_energy_used_kwh",
     "solar_utilization",
     "fairness_jain",
@@ -62,20 +63,7 @@ def run_experiment_suite(
     for scenario in scenarios:
         for baseline in baselines:
             for seed in seeds:
-                scenario_with_seed = ScenarioConfig(
-                    name=scenario.name,
-                    duration_minutes=scenario.duration_minutes,
-                    arrival_rate_per_hour=scenario.arrival_rate_per_hour,
-                    station_configs=scenario.station_configs,
-                    seed=seed,
-                    cloud_factor=scenario.cloud_factor,
-                    priority_probability=scenario.priority_probability,
-                    communication_loss_probability=scenario.communication_loss_probability,
-                    communication_latency_minutes=scenario.communication_latency_minutes,
-                    attack_probability=scenario.attack_probability,
-                    average_speed_kmh=scenario.average_speed_kmh,
-                    demand_scale=scenario.demand_scale,
-                )
+                scenario_with_seed = replace(scenario, seed=seed)
                 results.append(run_simulation(scenario_with_seed, baseline, seed=seed))
     return results
 

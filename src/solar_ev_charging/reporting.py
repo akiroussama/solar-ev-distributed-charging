@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
 from solar_ev_charging.experiments import METRIC_FIELDS, ExperimentSummary
@@ -14,6 +15,7 @@ METRIC_LABELS: dict[str, str] = {
     "average_total_minutes": "Average total time (min)",
     "average_extra_distance_km": "Extra distance (km)",
     "storage_energy_used_kwh": "Storage energy used (kWh)",
+    "direct_pv_energy_used_kwh": "Direct PV energy used (kWh)",
     "grid_energy_used_kwh": "Grid energy used (kWh)",
     "solar_utilization": "Solar utilization",
     "fairness_jain": "Jain fairness index",
@@ -36,7 +38,44 @@ PALETTE: tuple[str, ...] = (
     "#c73e1d",
     "#6f4e7c",
     "#008f8c",
+    "#8f2d56",
+    "#33658a",
+    "#f26419",
+    "#758e4f",
+    "#5b5f97",
+    "#a63d40",
 )
+
+BASELINE_DISPLAY_ORDER: tuple[str, ...] = (
+    "nearest_station",
+    "minimum_wait",
+    "aca_pd_fifo",
+    "v_assist_s_aca_pd_edf",
+    "deadline_safe",
+    "ablation_no_pd",
+    "ablation_no_edf",
+    "ablation_no_aoi",
+    "ablation_no_trust",
+    "ablation_no_partial",
+    "ablation_no_redirection",
+)
+
+BASELINE_DESCRIPTIONS: dict[str, str] = {
+    "nearest_station": "greedy allocation to the geographically nearest station.",
+    "minimum_wait": "greedy allocation to the station with the shortest FIFO queue.",
+    "aca_pd_fifo": "station-side admission with power declassification and FIFO waiting.",
+    "v_assist_s_aca_pd_edf": (
+        "full proposed policy with vehicle-side selection, secure admission, "
+        "power declassification, partial charging, stale-information penalty and EDF queueing."
+    ),
+    "deadline_safe": "proposed policy with a stricter admission deadline safety margin.",
+    "ablation_no_pd": "proposed policy without power declassification.",
+    "ablation_no_edf": "proposed policy with FIFO-style waiting instead of EDF scheduling.",
+    "ablation_no_aoi": "proposed policy without age-of-information penalty.",
+    "ablation_no_trust": "proposed policy without request trust and plausibility filtering.",
+    "ablation_no_partial": "proposed policy without partial-charge fallback.",
+    "ablation_no_redirection": "proposed policy without station redirection after local rejection.",
+}
 
 
 def write_report_bundle(
@@ -77,15 +116,18 @@ def write_bar_chart(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     scenarios = sorted({summary.scenario for summary in summaries})
-    baselines = sorted({summary.baseline for summary in summaries})
+    baselines = _ordered_baselines(summary.baseline for summary in summaries)
     lookup = {(summary.scenario, summary.baseline): summary for summary in summaries}
     max_value = max((summary.mean(metric) for summary in summaries), default=1.0)
     max_value = max(max_value, 1e-9)
+    width = max(width, 140 + len(scenarios) * max(95, len(baselines) * 32))
+    legend_columns = max(1, min(len(baselines), max(1, width // 255)))
+    legend_rows = (len(baselines) + legend_columns - 1) // legend_columns
 
     margin_left = 90
     margin_right = 30
     margin_top = 70
-    margin_bottom = 150
+    margin_bottom = 95 + legend_rows * 26
     plot_width = width - margin_left - margin_right
     plot_height = height - margin_top - margin_bottom
     group_width = plot_width / max(len(scenarios), 1)
@@ -119,7 +161,7 @@ def write_bar_chart(
         group_x = margin_left + scenario_index * group_width
         label_x = group_x + group_width / 2
         parts.append(
-            f'<text x="{label_x:.2f}" y="{height - 95}" text-anchor="middle" '
+            f'<text x="{label_x:.2f}" y="{margin_top + plot_height + 35}" text-anchor="middle" '
             f'font-family="Arial" font-size="12">{_escape(scenario)}</text>'
         )
         for baseline_index, baseline in enumerate(baselines):
@@ -140,14 +182,17 @@ def write_bar_chart(
                 f'text-anchor="middle" font-family="Arial" font-size="10">{value:.2f}</text>'
             )
 
-    legend_y = height - 55
+    legend_y = margin_top + plot_height + 62
     legend_x = margin_left
     for index, baseline in enumerate(baselines):
         color = PALETTE[index % len(PALETTE)]
-        x = legend_x + index * 250
-        parts.append(f'<rect x="{x}" y="{legend_y}" width="14" height="14" fill="{color}"/>')
+        row = index // legend_columns
+        column = index % legend_columns
+        x = legend_x + column * 255
+        y = legend_y + row * 26
+        parts.append(f'<rect x="{x}" y="{y}" width="14" height="14" fill="{color}"/>')
         parts.append(
-            f'<text x="{x + 20}" y="{legend_y + 12}" font-family="Arial" '
+            f'<text x="{x + 20}" y="{y + 12}" font-family="Arial" '
             f'font-size="12">{_escape(baseline)}</text>'
         )
 
@@ -162,7 +207,8 @@ def _render_markdown_report(
     title: str,
 ) -> str:
     scenarios = sorted({summary.scenario for summary in summaries})
-    baselines = sorted({summary.baseline for summary in summaries})
+    baselines = _ordered_baselines(summary.baseline for summary in summaries)
+    total_runs = sum(summary.runs for summary in summaries)
     lines = [
         f"# {title}",
         "",
@@ -173,11 +219,23 @@ def _render_markdown_report(
         "scheduling, solar/storage constraints, degraded communication and",
         "security-aware request handling across explicit baselines.",
         "",
+        "## Statistical Protocol",
+        "",
+        f"- Aggregated simulation cells: `{len(summaries)}`.",
+        f"- Total deterministic Monte Carlo runs: `{total_runs}`.",
+        "- Each summary row reports the empirical mean; `summary.csv` also reports",
+        "  sample standard deviation and normal 95% confidence-interval half-width.",
+        "- Ablation baselines isolate the contribution of declassification, EDF,",
+        "  age-of-information, trust filtering, partial admission and redirection.",
+        "- Sensitivity scenarios stress demand, BESS capacity, communication loss,",
+        "  adversarial traffic and strict solar autonomy.",
+        "",
         "## Baselines",
         "",
     ]
     for baseline in baselines:
-        lines.append(f"- `{baseline}`")
+        description = BASELINE_DESCRIPTIONS.get(baseline, "experimental baseline.")
+        lines.append(f"- `{baseline}`: {description}")
 
     lines.extend(["", "## Figures", ""])
     for metric, path in chart_paths.items():
@@ -196,7 +254,13 @@ def _render_markdown_report(
             "Solar util | Attack success |"
         )
         lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
-        for summary in [item for item in summaries if item.scenario == scenario]:
+        scenario_summaries = {
+            summary.baseline: summary for summary in summaries if summary.scenario == scenario
+        }
+        for baseline in baselines:
+            summary = scenario_summaries.get(baseline)
+            if summary is None:
+                continue
             lines.append(
                 "| {baseline} | {runs} | {rejection:.3f} | {wait:.2f} | {deadline:.3f} | "
                 "{grid:.2f} | {solar:.3f} | {attack:.3f} |".format(
@@ -236,6 +300,7 @@ def _render_markdown_report(
 
 def _render_interpretation(summaries: list[ExperimentSummary]) -> list[str]:
     proposed = "v_assist_s_aca_pd_edf"
+    deadline_safe = "deadline_safe"
     lines = ["## Interpretation", ""]
     scenarios = sorted({summary.scenario for summary in summaries})
     for scenario in scenarios:
@@ -251,6 +316,10 @@ def _render_interpretation(summaries: list[ExperimentSummary]) -> list[str]:
         proposed_rejection = proposed_summary.mean("rejection_rate")
         proposed_attack = proposed_summary.mean("attack_success_rate")
         proposed_deadline = proposed_summary.mean("deadline_miss_rate")
+        deadline_safe_summary = next(
+            (summary for summary in scenario_summaries if summary.baseline == deadline_safe),
+            None,
+        )
         lines.append(f"### `{scenario}`")
         lines.append("")
         if proposed_rejection <= best_rejection + 1e-12:
@@ -267,6 +336,13 @@ def _render_interpretation(summaries: list[ExperimentSummary]) -> list[str]:
                 "- Deadline misses are non-negligible. This is a tuning signal: the current "
                 "admission rule favors serving more vehicles and should be compared against a "
                 "stricter deadline-safety margin."
+            )
+        if deadline_safe_summary is not None:
+            delta = deadline_safe_summary.mean("deadline_miss_rate") - proposed_deadline
+            lines.append(
+                "- Deadline-safe variant changes deadline misses by "
+                f"{delta:+.3f} relative to the proposed policy, exposing the "
+                "acceptance-versus-punctuality trade-off."
             )
         lines.append("")
 
@@ -290,3 +366,8 @@ def _escape(value: str) -> str:
     return (
         value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
     )
+
+
+def _ordered_baselines(baselines: Iterable[str]) -> list[str]:
+    order = {baseline: index for index, baseline in enumerate(BASELINE_DISPLAY_ORDER)}
+    return sorted(set(baselines), key=lambda baseline: (order.get(baseline, 999), baseline))

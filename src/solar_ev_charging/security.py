@@ -18,6 +18,7 @@ class SecurityCheck(str, Enum):
     MISSING_SIGNATURE = "missing_signature"
     LOW_TRUST = "low_trust"
     IMPLAUSIBLE_SOC = "implausible_soc"
+    IMPLAUSIBLE_PRIORITY = "implausible_priority"
 
 
 @dataclass
@@ -51,6 +52,9 @@ class TrustRegistry:
 
         if self.vehicle_trust.get(request.vehicle_id, 1.0) < self.min_trust:
             return SecurityCheck.LOW_TRUST
+
+        if request.priority > 5:
+            return SecurityCheck.IMPLAUSIBLE_PRIORITY
 
         # Plausibility is deliberately conservative: impossible SOC jumps are
         # rejected before the station reserves scarce energy.

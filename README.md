@@ -29,6 +29,15 @@ The current implementation includes deterministic domain models, admission
 decisions, station scoring, request validation, simulation scenarios, baselines,
 statistical summaries, SVG charts and Markdown report generation.
 
+The full experiment suite now evaluates:
+
+- Research scenarios: nominal operation, high demand, low irradiance, degraded
+  communication and cyber-security stress.
+- Sensitivity scenarios: demand scaling, reduced BESS capacity, high
+  communication loss/noise, adversarial traffic and no-grid operation.
+- Baselines and ablations: nearest station, minimum wait, ACA-PD-FIFO, the full
+  proposed policy, deadline-safe admission and six feature-removal ablations.
+
 ## Quick Start
 
 ```bash
@@ -48,6 +57,12 @@ Run the reproducible experiment suite:
 
 ```bash
 .venv\Scripts\solar-ev-experiment --runs 30 --output-dir outputs\research_report
+```
+
+Run only a subset when iterating:
+
+```bash
+.venv\Scripts\solar-ev-experiment --suite research --runs 10 --output-dir outputs\research_debug
 ```
 
 The experiment command writes:
@@ -85,4 +100,3 @@ tests/                        # automated tests
 Research implementation under active development. The APIs are intentionally
 small and typed so the simulator can grow without mixing confidential project
 material into the public codebase.
-

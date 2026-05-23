@@ -2,6 +2,8 @@ cff-version: 1.2.0
 title: Solar EV Distributed Charging
 message: If you use this research code, please cite the repository.
 type: software
+version: 0.2.0
+date-released: "2026-05-23"
 authors:
   - family-names: Oussama
     given-names: Akir
@@ -15,4 +17,3 @@ keywords:
   - admission control
   - queueing
   - cybersecurity
-

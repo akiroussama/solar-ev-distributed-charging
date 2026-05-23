@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 
 from solar_ev_charging.models import (
     AdmissionDecision,
@@ -52,6 +53,8 @@ def estimate_wait_minutes(
     incoming: VehicleRequest,
     incoming_service_minutes: float,
     now_minute: float,
+    *,
+    use_edf: bool = True,
 ) -> float:
     """Estimate wait under adjusted EDF scheduling.
 
@@ -61,6 +64,12 @@ def estimate_wait_minutes(
 
     if station.has_free_socket and not station.queue:
         return 0.0
+
+    if not use_edf:
+        active_work = sum(station.active_sessions_remaining_minutes)
+        queued_work = sum(session.service_minutes for session in station.queue)
+        parallelism = max(station.socket_count, 1)
+        return (active_work + queued_work) / parallelism
 
     incoming_session = QueuedSession(
         vehicle_id=incoming.vehicle_id,
@@ -89,6 +98,9 @@ def admit_request(
     now_minute: float | None = None,
     trust_registry: TrustRegistry | None = None,
     allow_partial: bool = True,
+    allow_declassification: bool = True,
+    use_edf: bool = True,
+    deadline_safety_factor: float = 1.0,
 ) -> ChargingOffer:
     """Evaluate a station-side admission request using S-ACA-PD-EDF."""
 
@@ -115,13 +127,20 @@ def admit_request(
     best_energy_failure = False
     best_time_failure = False
 
-    for mode in mode_declassification_order(request.requested_mode):
+    modes = (
+        mode_declassification_order(request.requested_mode)
+        if allow_declassification
+        else (request.requested_mode,)
+    )
+    effective_deadline = request.max_wait_minutes * deadline_safety_factor
+
+    for mode in modes:
         if min(policy.power_kw(mode), request.max_charge_kw) > station.available_power_kw:
             best_time_failure = True
             continue
         duration = service_minutes(requested_energy, mode, request, policy)
-        wait = estimate_wait_minutes(station, request, duration, now)
-        enough_time = wait + duration <= request.max_wait_minutes
+        wait = estimate_wait_minutes(station, request, duration, now, use_edf=use_edf)
+        enough_time = wait + duration <= effective_deadline
         enough_energy = station.available_energy_kwh() >= requested_energy
 
         if enough_time and enough_energy:
@@ -150,11 +169,11 @@ def admit_request(
     if allow_partial:
         partial_energy = request.minimum_useful_energy_kwh()
         if partial_energy > 0:
-            for mode in reversed(mode_declassification_order(request.requested_mode)):
+            for mode in reversed(modes):
                 duration = service_minutes(partial_energy, mode, request, policy)
-                wait = estimate_wait_minutes(station, request, duration, now)
+                wait = estimate_wait_minutes(station, request, duration, now, use_edf=use_edf)
                 if (
-                    wait + duration <= request.max_wait_minutes
+                    wait + duration <= effective_deadline
                     and station.available_energy_kwh() >= partial_energy
                 ):
                     return ChargingOffer(
@@ -184,6 +203,7 @@ def station_selection_score(
     *,
     now_minute: float,
     average_speed_kmh: float = 35.0,
+    use_edf: bool = True,
 ) -> float:
     """Score a station from the vehicle side using V-ASSIST criteria."""
 
@@ -195,7 +215,7 @@ def station_selection_score(
         request,
         policy,
     )
-    wait = estimate_wait_minutes(station, request, duration, now_minute)
+    wait = estimate_wait_minutes(station, request, duration, now_minute, use_edf=use_edf)
     age_minutes = max(now_minute - station.info_timestamp_minute, 0.0)
     energy_margin = station.available_energy_kwh() - request.requested_energy_kwh()
     urgency = 1.0 / max(request.max_wait_minutes, 1.0)
@@ -219,24 +239,40 @@ def select_station(
     *,
     now_minute: float | None = None,
     average_speed_kmh: float = 35.0,
+    allow_partial: bool = True,
+    allow_declassification: bool = True,
+    use_edf: bool = True,
+    use_aoi: bool = True,
+    deadline_safety_factor: float = 1.0,
 ) -> ChargingOffer:
     """Select the best station for a vehicle request using V-ASSIST."""
 
     policy = policy or ChargingPolicy()
+    score_policy = policy if use_aoi else replace(policy, stale_information_penalty_per_minute=0.0)
     now = request.timestamp_minute if now_minute is None else now_minute
 
     best_offer: ChargingOffer | None = None
     for station in stations:
-        admission = admit_request(request, station, policy, now_minute=now, allow_partial=True)
+        admission = admit_request(
+            request,
+            station,
+            policy,
+            now_minute=now,
+            allow_partial=allow_partial,
+            allow_declassification=allow_declassification,
+            use_edf=use_edf,
+            deadline_safety_factor=deadline_safety_factor,
+        )
         if not admission.accepted:
             continue
 
         score = station_selection_score(
             request,
             station,
-            policy,
+            score_policy,
             now_minute=now,
             average_speed_kmh=average_speed_kmh,
+            use_edf=use_edf,
         )
         offer = ChargingOffer(
             decision=admission.decision,

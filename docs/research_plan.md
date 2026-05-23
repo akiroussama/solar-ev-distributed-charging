@@ -18,10 +18,16 @@ for solar-powered EV charging stations with local battery storage.
 
 ## Validation Strategy
 
-The method will be compared against nearest-station, minimum-waiting-time, ACA,
-ACA with waiting-time constraints, FIFO, no-PV-forecast, no-security, and
-centralized baselines.
+The method is compared against nearest-station, minimum-waiting-time,
+ACA-PD-FIFO, deadline-safe admission and feature-removal ablations:
+no declassification, no EDF, no age-of-information penalty, no trust filtering,
+no partial admission and no redirection.
 
 Metrics include rejection rate, waiting time, deadline satisfaction, grid-energy
 usage, solar utilization, fairness, stale-information impact, and attack impact.
 
+The scenario matrix covers nominal operation, high demand, low irradiance,
+degraded communication, explicit adversarial traffic, reduced BESS capacity,
+high communication noise and no-grid autonomous operation. Each experiment cell
+is repeated over deterministic random seeds and reported with means, sample
+standard deviations and 95% confidence intervals.

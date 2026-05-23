@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from random import Random
 from statistics import mean
@@ -12,6 +12,7 @@ from solar_ev_charging.algorithms import (
     admit_request,
     select_station,
     service_minutes,
+    station_selection_score,
 )
 from solar_ev_charging.models import (
     AdmissionDecision,
@@ -35,6 +36,27 @@ class Baseline(str, Enum):
     MIN_WAIT = "minimum_wait"
     ACA_PD_FIFO = "aca_pd_fifo"
     PROPOSED = "v_assist_s_aca_pd_edf"
+    DEADLINE_SAFE = "deadline_safe"
+    NO_PD = "ablation_no_pd"
+    NO_EDF = "ablation_no_edf"
+    NO_AOI = "ablation_no_aoi"
+    NO_TRUST = "ablation_no_trust"
+    NO_PARTIAL = "ablation_no_partial"
+    NO_REDIRECTION = "ablation_no_redirection"
+
+
+@dataclass(frozen=True)
+class PolicySwitches:
+    """Feature switches used for ablation studies."""
+
+    vehicle_selection: bool
+    security: bool
+    declassification: bool
+    edf: bool
+    aoi: bool
+    partial: bool
+    redirection: bool
+    deadline_safety_factor: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -44,6 +66,7 @@ class VehicleArrival:
     minute: int
     request: VehicleRequest
     is_attack: bool
+    attack_type: str | None = None
 
 
 @dataclass
@@ -88,6 +111,7 @@ class SimulationMetrics:
     attacks_blocked: int = 0
     attacks_accepted: int = 0
     storage_energy_used_kwh: float = 0.0
+    direct_pv_energy_used_kwh: float = 0.0
     grid_energy_used_kwh: float = 0.0
     pv_generated_kwh: float = 0.0
     pv_spilled_kwh: float = 0.0
@@ -174,6 +198,7 @@ class SimulationMetrics:
             "average_total_minutes": self.average_total_minutes,
             "average_extra_distance_km": self.average_extra_distance_km,
             "storage_energy_used_kwh": self.storage_energy_used_kwh,
+            "direct_pv_energy_used_kwh": self.direct_pv_energy_used_kwh,
             "grid_energy_used_kwh": self.grid_energy_used_kwh,
             "pv_generated_kwh": self.pv_generated_kwh,
             "pv_spilled_kwh": self.pv_spilled_kwh,
@@ -192,6 +217,7 @@ class RuntimeStation:
 
     config: StationConfig
     stored_energy_kwh: float
+    grid_backup_remaining_kwh: float
     active: list[RunningJob] = field(default_factory=list)
     queue: list[ScheduledJob] = field(default_factory=list)
 
@@ -199,7 +225,11 @@ class RuntimeStation:
     def from_config(cls, config: StationConfig) -> RuntimeStation:
         """Create a runtime station from static configuration."""
 
-        return cls(config=config, stored_energy_kwh=config.initial_energy_kwh)
+        return cls(
+            config=config,
+            stored_energy_kwh=config.initial_energy_kwh,
+            grid_backup_remaining_kwh=config.grid_backup_kwh,
+        )
 
     def add_pv(self, minute: int, cloud_factor: float) -> tuple[float, float]:
         """Add one minute of PV energy and return generated/spilled energy."""
@@ -215,9 +245,11 @@ class RuntimeStation:
             / 60.0
         )
         room = max(self.config.storage_capacity_kwh - self.stored_energy_kwh, 0.0)
-        stored = min(generated, room)
+        storable = generated * self.config.storage_charge_efficiency
+        stored = min(storable, room)
         self.stored_energy_kwh += stored
-        return generated, generated - stored
+        generated_used_for_storage = stored / self.config.storage_charge_efficiency
+        return generated, max(generated - generated_used_for_storage, 0.0)
 
     def forecast_pv_kwh(self, minute: int, cloud_factor: float, horizon_minutes: int = 60) -> float:
         """Estimate near-future PV energy with a rectangular approximation."""
@@ -251,7 +283,7 @@ class RuntimeStation:
             storage_reserve_kwh=self.config.storage_reserve_kwh,
             pv_forecast_kwh=self.forecast_pv_kwh(minute, cloud_factor),
             available_power_kw=self.config.available_power_kw,
-            grid_backup_kwh=self.config.grid_backup_kwh,
+            grid_backup_kwh=self.grid_backup_remaining_kwh,
             active_sessions_remaining_minutes=tuple(job.remaining_minutes for job in self.active),
             queue=tuple(
                 QueuedSession(
@@ -275,14 +307,18 @@ class RuntimeStation:
             + sum(job.offer.service_minutes for job in self.queue)
         ) / self.config.socket_count
 
-    def reserve_energy(self, energy_kwh: float) -> tuple[float, float]:
-        """Reserve energy and return storage/grid split."""
+    def reserve_energy(self, energy_kwh: float) -> tuple[float, float, float]:
+        """Reserve energy and return storage, direct-PV and grid split."""
 
         usable_storage = max(self.stored_energy_kwh - self.config.storage_reserve_kwh, 0.0)
-        storage_used = min(usable_storage, energy_kwh)
-        grid_used = max(energy_kwh - storage_used, 0.0)
-        self.stored_energy_kwh -= storage_used
-        return storage_used, grid_used
+        deliverable_from_storage = usable_storage * self.config.storage_discharge_efficiency
+        storage_delivered = min(deliverable_from_storage, energy_kwh)
+        shortfall = max(energy_kwh - storage_delivered, 0.0)
+        grid_used = min(shortfall, self.grid_backup_remaining_kwh)
+        direct_pv_used = max(shortfall - grid_used, 0.0)
+        self.stored_energy_kwh -= storage_delivered / self.config.storage_discharge_efficiency
+        self.grid_backup_remaining_kwh -= grid_used
+        return storage_delivered, direct_pv_used, grid_used
 
     def enqueue(self, job: ScheduledJob) -> None:
         """Queue an accepted job."""
@@ -325,7 +361,7 @@ class RuntimeStation:
 
     def _start_queued_jobs(self, *, minute: int, baseline: Baseline) -> None:
         while self.queue and len(self.active) < self.config.socket_count:
-            if baseline is Baseline.PROPOSED:
+            if _switches_for_baseline(baseline).edf:
                 self.queue.sort(
                     key=lambda job: adjusted_queue_score(
                         QueuedSession(
@@ -366,7 +402,9 @@ def run_simulation(
     metrics = SimulationMetrics(scenario=scenario.name, baseline=baseline.value, seed=seed)
     registry = TrustRegistry(
         known_vehicle_ids={
-            arrival.request.vehicle_id for arrival in arrivals if not arrival.is_attack
+            arrival.request.vehicle_id
+            for arrival in arrivals
+            if not arrival.is_attack or arrival.attack_type != "sybil"
         }
     )
 
@@ -401,6 +439,47 @@ def run_simulation(
     return metrics
 
 
+def _switches_for_baseline(baseline: Baseline) -> PolicySwitches:
+    """Return feature switches for a baseline or ablation."""
+
+    proposed = PolicySwitches(
+        vehicle_selection=True,
+        security=True,
+        declassification=True,
+        edf=True,
+        aoi=True,
+        partial=True,
+        redirection=True,
+    )
+    match baseline:
+        case Baseline.PROPOSED:
+            return proposed
+        case Baseline.DEADLINE_SAFE:
+            return replace(proposed, deadline_safety_factor=0.72)
+        case Baseline.NO_PD:
+            return replace(proposed, declassification=False)
+        case Baseline.NO_EDF:
+            return replace(proposed, edf=False)
+        case Baseline.NO_AOI:
+            return replace(proposed, aoi=False)
+        case Baseline.NO_TRUST:
+            return replace(proposed, security=False)
+        case Baseline.NO_PARTIAL:
+            return replace(proposed, partial=False)
+        case Baseline.NO_REDIRECTION:
+            return replace(proposed, redirection=False)
+        case Baseline.NEAREST | Baseline.MIN_WAIT | Baseline.ACA_PD_FIFO:
+            return PolicySwitches(
+                vehicle_selection=False,
+                security=False,
+                declassification=baseline is Baseline.ACA_PD_FIFO,
+                edf=False,
+                aoi=False,
+                partial=False,
+                redirection=False,
+            )
+
+
 def _handle_arrival(
     *,
     arrival: VehicleArrival,
@@ -417,7 +496,8 @@ def _handle_arrival(
     if arrival.is_attack:
         metrics.attacks_attempted += 1
 
-    if baseline is Baseline.PROPOSED:
+    switches = _switches_for_baseline(baseline)
+    if switches.security:
         security = registry.check_request(request, now_minute=float(arrival.minute))
         if security is not SecurityCheck.PASS:
             metrics.attacks_blocked += 1 if arrival.is_attack else 0
@@ -442,8 +522,9 @@ def _handle_arrival(
         metrics.rejected += 1
         return
 
-    storage_used, grid_used = station.reserve_energy(offer.allocated_energy_kwh)
+    storage_used, direct_pv_used, grid_used = station.reserve_energy(offer.allocated_energy_kwh)
     metrics.storage_energy_used_kwh += storage_used
+    metrics.direct_pv_energy_used_kwh += direct_pv_used
     metrics.grid_energy_used_kwh += grid_used
     metrics.accepted += 1
     if arrival.is_attack:
@@ -474,27 +555,50 @@ def _choose_station(
     minute: int,
     rng: Random,
 ) -> tuple[RuntimeStation, ChargingOffer] | None:
-    if baseline is Baseline.PROPOSED:
+    switches = _switches_for_baseline(baseline)
+    if switches.vehicle_selection:
         observed_states = [
             _observed_station_state(station, scenario=scenario, minute=minute, rng=rng)
             for station in stations.values()
         ]
-        offer = select_station(
-            request,
-            observed_states,
-            policy,
-            now_minute=float(minute),
-            average_speed_kmh=scenario.average_speed_kmh,
-        )
-        if not offer.station_id:
-            return None
-        station = stations[offer.station_id]
+        if switches.redirection:
+            offer = select_station(
+                request,
+                observed_states,
+                policy,
+                now_minute=float(minute),
+                average_speed_kmh=scenario.average_speed_kmh,
+                allow_partial=switches.partial,
+                allow_declassification=switches.declassification,
+                use_edf=switches.edf,
+                use_aoi=switches.aoi,
+                deadline_safety_factor=switches.deadline_safety_factor,
+            )
+            if not offer.station_id:
+                return None
+            station = stations[offer.station_id]
+        else:
+            best_state = max(
+                observed_states,
+                key=lambda state: station_selection_score(
+                    request,
+                    state,
+                    policy,
+                    now_minute=float(minute),
+                    average_speed_kmh=scenario.average_speed_kmh,
+                    use_edf=switches.edf,
+                ),
+            )
+            station = stations[best_state.station_id]
         actual_offer = admit_request(
             request,
             station.to_state(minute=minute, cloud_factor=scenario.cloud_factor),
             policy,
             now_minute=float(minute),
-            allow_partial=True,
+            allow_partial=switches.partial,
+            allow_declassification=switches.declassification,
+            use_edf=switches.edf,
+            deadline_safety_factor=switches.deadline_safety_factor,
         )
         return station, actual_offer
 
@@ -519,6 +623,7 @@ def _choose_station(
             allow_partial=False,
         )
         return station, offer
+    return None
 
 
 def _basic_offer(
@@ -583,11 +688,22 @@ def _observed_station_state(
     else:
         age = rng.uniform(0.0, scenario.communication_latency_minutes)
         reliability = max(0.0, 1.0 - scenario.communication_loss_probability)
-    return station.to_state(
+    state = station.to_state(
         minute=minute,
         cloud_factor=scenario.cloud_factor,
         info_timestamp_minute=float(minute) - age,
         reliability=reliability,
+    )
+    if scenario.communication_noise_fraction <= 0:
+        return state
+    noise = rng.uniform(
+        -scenario.communication_noise_fraction,
+        scenario.communication_noise_fraction,
+    )
+    return replace(
+        state,
+        stored_energy_kwh=max(state.stored_energy_kwh * (1.0 + noise), 0.0),
+        pv_forecast_kwh=max(state.pv_forecast_kwh * (1.0 + noise), 0.0),
     )
 
 
@@ -609,11 +725,28 @@ def _generate_arrivals(
             break
         index += 1
         is_attack = rng.random() < scenario.attack_probability
-        vehicle_id = f"ev-{seed}-{index}" if not is_attack else f"attacker-{seed}-{index}"
+        attack_type = (
+            rng.choice(["sybil", "missing_signature", "soc_spoof", "priority_spoof", "stale"])
+            if is_attack
+            else None
+        )
+        vehicle_id = f"attacker-{seed}-{index}" if attack_type == "sybil" else f"ev-{seed}-{index}"
         soc = rng.uniform(0.08, 0.52)
         desired_soc = min(0.92, rng.uniform(0.72, 0.88) * scenario.demand_scale)
         minimum_soc = min(desired_soc, soc + rng.uniform(0.12, 0.24))
         priority = 3 if rng.random() < scenario.priority_probability else rng.choice([0, 1])
+        timestamp = float(int(minute))
+        signature: str | None = "simulated"
+        if attack_type == "missing_signature":
+            signature = None
+        if attack_type == "soc_spoof":
+            soc = 0.01
+            desired_soc = 0.99
+            minimum_soc = 0.60
+        if attack_type == "priority_spoof":
+            priority = 99
+        if attack_type == "stale":
+            timestamp -= 20.0
         request = VehicleRequest(
             vehicle_id=vehicle_id,
             soc=soc,
@@ -625,12 +758,19 @@ def _generate_arrivals(
             priority=priority,
             position=Position(rng.uniform(0.0, 12.0), rng.uniform(0.0, 12.0)),
             requested_mode=_random_mode(rng),
-            timestamp_minute=float(int(minute)),
-            nonce=f"nonce-{seed}-{index}" if not is_attack else "replayed-or-missing",
-            signature="simulated" if not is_attack else None,
+            timestamp_minute=timestamp,
+            nonce=f"nonce-{seed}-{index}" if attack_type != "stale" else "old-nonce",
+            signature=signature,
             max_charge_kw=rng.choice([22.0, 50.0, 100.0, 150.0]),
         )
-        arrivals.append(VehicleArrival(minute=int(minute), request=request, is_attack=is_attack))
+        arrivals.append(
+            VehicleArrival(
+                minute=int(minute),
+                request=request,
+                is_attack=is_attack,
+                attack_type=attack_type,
+            )
+        )
     return arrivals
 
 
