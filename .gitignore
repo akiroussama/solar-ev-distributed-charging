@@ -10,6 +10,8 @@ coverage.xml
 htmlcov/
 dist/
 build/
+outputs/
+reports/
 
 # Virtual environments
 .venv/
@@ -25,4 +27,3 @@ venv/
 *.docx
 *.pdf
 *.xlsx
-

@@ -25,8 +25,9 @@ The core research question is:
 > charging under mobility, renewable-energy, queueing, communication, and
 > cyber-physical security constraints?
 
-The current implementation is the first executable layer: deterministic domain
-models, admission decisions, station scoring, request validation, and unit tests.
+The current implementation includes deterministic domain models, admission
+decisions, station scoring, request validation, simulation scenarios, baselines,
+statistical summaries, SVG charts and Markdown report generation.
 
 ## Quick Start
 
@@ -43,6 +44,19 @@ Run the minimal scenario:
 .venv\Scripts\python examples\run_minimal_scenario.py
 ```
 
+Run the reproducible experiment suite:
+
+```bash
+.venv\Scripts\solar-ev-experiment --runs 30 --output-dir outputs\research_report
+```
+
+The experiment command writes:
+
+- `runs.csv`: per-seed metrics.
+- `summary.csv`: mean, standard deviation and 95% confidence intervals.
+- `research_report.md`: Markdown report.
+- `figures/*.svg`: dependency-free charts.
+
 ## Quality Gates
 
 Local checks:
@@ -51,7 +65,6 @@ Local checks:
 ruff format --check .
 ruff check .
 mypy src tests
-pytest --cov=solar_ev_charging --cov-report=term-missing
 pytest --cov=solar_ev_charging --cov-report=term-missing --cov-fail-under=85
 ```
 
@@ -60,16 +73,16 @@ GitHub Actions runs the same gates on every push and pull request.
 ## Repository Layout
 
 ```text
-.
-├── docs/                         # public research plan
-├── examples/                     # runnable examples
-├── src/solar_ev_charging/        # package source
-├── tests/                        # automated tests
-└── .github/workflows/            # CI and release automation
+docs/                         # public research plan
+examples/                     # runnable examples
+src/solar_ev_charging/        # package source
+tests/                        # automated tests
+.github/workflows/            # CI and release automation
 ```
 
 ## Status
 
-Early research implementation. The APIs are intentionally small and typed so
-the simulator can grow without mixing confidential project material into the
-public codebase.
+Research implementation under active development. The APIs are intentionally
+small and typed so the simulator can grow without mixing confidential project
+material into the public codebase.
+

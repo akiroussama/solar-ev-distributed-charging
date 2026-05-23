@@ -42,6 +42,9 @@ Homepage = "https://github.com/akiroussama/solar-ev-distributed-charging"
 Repository = "https://github.com/akiroussama/solar-ev-distributed-charging"
 Issues = "https://github.com/akiroussama/solar-ev-distributed-charging/issues"
 
+[project.scripts]
+solar-ev-experiment = "solar_ev_charging.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
