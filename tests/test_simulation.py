@@ -38,6 +38,8 @@ def test_run_simulation_is_deterministic_for_same_seed() -> None:
 
     assert first.as_row() == second.as_row()
     assert first.generated > 0
+    assert first.accepted + first.rejected == first.generated
+    assert first.unfinished >= 0
 
 
 def test_security_stress_blocks_attacks_for_proposed_policy() -> None:

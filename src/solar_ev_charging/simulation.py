@@ -110,6 +110,7 @@ class SimulationMetrics:
     attacks_attempted: int = 0
     attacks_blocked: int = 0
     attacks_accepted: int = 0
+    unfinished: int = 0
     storage_energy_used_kwh: float = 0.0
     direct_pv_energy_used_kwh: float = 0.0
     grid_energy_used_kwh: float = 0.0
@@ -208,6 +209,7 @@ class SimulationMetrics:
             "attacks_blocked": self.attacks_blocked,
             "attacks_accepted": self.attacks_accepted,
             "attack_success_rate": self.attack_success_rate,
+            "unfinished": self.unfinished,
         }
 
 
@@ -429,11 +431,11 @@ def run_simulation(
         for station in stations.values():
             station.advance_one_minute(minute=minute, baseline=baseline, metrics=metrics)
 
-    # Flush sessions that are already accepted but not completed within horizon.
+    # Preserve accepted-but-unfinished sessions separately from admission rejections.
     for station in stations.values():
-        metrics.rejected += len(station.queue)
+        metrics.unfinished += len(station.queue)
         station.queue.clear()
-        metrics.rejected += len(station.active)
+        metrics.unfinished += len(station.active)
         station.active.clear()
 
     return metrics
